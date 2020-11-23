@@ -1,0 +1,6 @@
+Kwerendy:
+
+	MsSQL:  exec sp_columns FactInternetSales
+	Oracle:  DESCRIBE FactInternetSales
+	PostgreSQL: \d+ FactInternetSales
+	MySQL:  DESCRIBE FactInternetSales
