@@ -1,0 +1,3 @@
+bcp  AdventureWorksDW2019.dbo.CUSTOMERS_290938 format null -c -fC:\Users\Marcin\Desktop\bdp\customers.fmt -S -T
+
+bcp  AdventureWorksDW2019.dbo.CUSTOMERS_290938 in C:\Users\Marcin\Desktop\bdp\customers.csv -T  -f C:\Users\Marcin\Desktop\bdp\customers.fmt
