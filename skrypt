@@ -1,0 +1,135 @@
+#CHANGELOG
+#25/01/2021 - creation date
+#script for loading validated data into database
+
+nr_indeksu="290938"
+adres="http://home.agh.edu.pl/~wsarlej/dyd/bdp2/materialy/cw10/InternetSales_new.zip"
+log_name="log.txt"
+password="bdp2agh"
+sql_db="BDP"
+sql_user="BDP"
+sql_password="QkRQCg=="
+email="mszlapa@student.agh.edu.pl"
+script_name=$(basename -- "$0")
+
+printf -v TIMESTAMP '%(%Y%m%d)T%(%H%M%S)T'
+mkdir -p PROCESSED
+
+#funkcja do logowania
+function logging {
+	message="$1"
+	printf -v TIMESTAMP2 '%(%Y%m%d)T%(%H%M%S)T'
+	if [ $2 == 0 ]; then
+		printf "%s - %s - %s\n" "${TIMESTAMP2}" "${message}" "Successful" >> "PROCESSED/${script_name}_${TIMESTAMP}.log"
+	fi
+}
+
+filename="$(basename -- $adres)"
+filename="${filename%.*}"
+#pobranie pliku
+rm -f "${filename}.zip"
+wget "$adres"
+logging "Downloading Step" "$?"
+
+#rozpakowanie pliku
+unzip -oP "$password" "${filename}.zip"
+logging "Unzipping Step" "$?"
+
+
+#odrzucenie blednych wierszy
+file_temp="temp"
+file_bad="${filename}.bad_${TIMESTAMP}"
+file_name="${filename}.txt"
+rows_number="$(wc -l "${file_name}")"
+dup_rows_number=$(sort "${file_name}" | uniq -D | wc -l)
+awk -v file_bad="${file_bad}" '
+	NR == FNR {
+	    tmp_tab[$0]++
+	    next
+	}
+	$7!="" {
+	    $7="" 
+	    print $0 > file_bad
+	    next
+	}
+	tmp_tab[$0]++ {
+	    print $0 > file_bad
+	    next
+	}
+	$5 > 100 {
+	    print $0 > file_bad
+	    next
+	}
+	{
+	    for(i=1; i<NF; i++){
+			if($i == ""){
+				print $0 > file_bad
+				next;
+			}
+		}
+		if(match($3,/^"([[:alpha:] -]+),([[:alpha:] -]+)"$/, mth)){
+			$3=mth[2] OFS mth[1]
+			print $0
+		}
+		else {
+			print $0 > file_bad
+		}
+	}
+' FS='|' OFS='|' "InternetSales_old.txt" "$file_name"  > "$file_temp"
+mv "$file_temp" "$file_name"
+
+logging "Validation Step" "$?"
+
+#tworzenie tabeli i ladowanie danych z pliku
+delete="DROP TABLE IF EXISTS CUSTOMERS_${nr_indeksu}"
+create="CREATE TABLE CUSTOMERS_${nr_indeksu}
+(ProductKey INT, CurrencyAlternateKey VARCHAR(3), FirstName VARCHAR(255), LastName VARCHAR(255),
+OrderDateKey VARCHAR(255), OrderQuantity INT, UnitPrice FLOAT, SecretCode VARCHAR(255))"
+load="LOAD DATA LOCAL INFILE 'InternetSales_new.txt' INTO TABLE CUSTOMERS_${nr_indeksu} FIELDS TERMINATED BY '|' ENCLOSED BY '\"'LINES TERMINATED BY '\n'IGNORE 1 ROWS; SELECT ROW_COUNT()"
+
+pass=$(echo  ${sql_password} | base64 -d)
+sudo mysql -u "${sql_user}" -p"${pass}" "${sql_db}" -e "$delete" 
+sudo mysql -u "${sql_user}" -p"${pass}" "${sql_db}" -e "$create" 
+logging "Creating table Step" "$?"
+loaded_data=$(sudo mysql --local-infile=1 -u "${sql_user}" -p"${pass}" "${sql_db}" -e "$load")
+logging "Inserting values Step" "$?"
+
+#przeniesienie przetworzonego pliku
+printf -v TIMESTAMP2 '%(%Y%m%d)T%(%H%M%S)T'
+mv ${file_name} PROCESSED/${TIMESTAMP2}"_"${file_name}
+
+logging "Moving file to PROCESSED Step" "$?"
+
+#wysylanie maila
+printf -v TIMESTAMP3 '%(%Y%m%d)T%(%H%M%S)T'
+mail -s "CUSTOMERS_LOAD - ${TIMESTAMP3}" "$EMAIL" <<< "${rows_number} $(wc -l PROCESSED/${TIMESTAMP2}"_"${file_name}) ${dup_rows_number} $(wc -l < "${file_bad}") ${loaded_data}"
+
+logging "Sending mail Step" "$?"
+
+#aktualizacja kolumny secret code
+update="UPDATE CUSTOMERS_${nr_indeksu} set SecretCode = (SELECT substring(MD5(RAND()), -10))"
+sudo mysql -u "${sql_user}" -p"${pass}" "${sql_db}" -e "${update}"
+
+logging "Updating secret codes Step" "$?"
+
+#wyeksportowanie do pliku csv
+#file_temp="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )/temp"
+file_temp='/tmp/temp_file'
+sudo rm -f $file_temp
+query_export="SELECT * FROM CUSTOMERS_${nr_indeksu}
+INTO OUTFILE '${file_temp}' FIELDS ENCLOSED BY '\"' TERMINATED BY ',' ESCAPED BY '\"' LINES TERMINATED BY '\n'; SELECT ROW_COUNT()"
+rows=$(sudo mysql -u "${sql_user}" -p"${pass}" "${sql_db}" -e "$query_export")
+sudo cp "$file_temp" customers.csv
+
+logging "Exporting to csv Step" "$?"
+
+#kompresja
+sudo zip customers.zip customers.csv
+
+logging "Compressing Step" "$?"
+
+#wysylanie skompresowanego pliku
+printf -v TIMESTAMP2 '%(%Y%m%d)T%(%H%M%S)T'
+mail -s "${TIMESTAMP2}: "$rows" rows" -acustomers.zip "$email"
+
+logging "Sending mail Step" "$?"
